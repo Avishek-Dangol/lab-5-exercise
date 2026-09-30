@@ -1,6 +1,11 @@
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include <SFML/Graphics.hpp>
@@ -10,10 +15,15 @@ const int WINDOW_HEIGHT = 800;
 const int FPS_LIMIT = 30;
 const int TOTAL_FRAMES = 90;
 
+// Project 1a Galaga window. The editor view is twice this in each direction.
+const float GALAGA_WIDTH = 768.f;
+const float GALAGA_HEIGHT = 1024.f;
+
 using Point2D = sf::Vector2f;
 
-Point2D mouseToPoint(sf::Vector2i position) {
-    return Point2D{static_cast<float>(position.x), static_cast<float>(position.y)};
+// mapPixelToCoords converts window pixels into the current view.
+Point2D mouseToPoint(const sf::RenderWindow& window, sf::Vector2i position) {
+    return window.mapPixelToCoords(position);
 }
 float lengthOf(Point2D v) { return std::sqrt(v.x * v.x + v.y * v.y); }
 
@@ -194,30 +204,118 @@ int closestControlPoint(const std::vector<Point2D>& curve, Point2D mouse) {
     return best;
 }
 
+void drawGalagaOverlay(sf::RenderWindow& window) {
+    sf::RectangleShape screen({GALAGA_WIDTH, GALAGA_HEIGHT});
+    screen.setPosition({0.f, 0.f});
+    screen.setFillColor(sf::Color(18, 22, 48));
+    screen.setOutlineThickness(4.f);
+    screen.setOutlineColor(sf::Color(180, 80, 255));
+    window.draw(screen);
+}
+
 // TODO: (Part 1) Store four control points for the curve.
-std::vector<Point2D> points = {
-    {160.f, 620.f},
-    {240.f, 180.f},
-    {520.f, 180.f},
-    {620.f, 620.f},
+std::vector<std::vector<Point2D>> curves = {
+    {
+        {160.f, 620.f},
+        {240.f, 180.f},
+        {520.f, 180.f},
+        {620.f, 620.f},
+    },
 };
 
+int activeCurve = 0;
 int selectedPoint = -1;
 
+std::vector<Point2D>& currentCurve() { return curves[static_cast<std::size_t>(activeCurve)]; }
+void selectCurve(int index) {
+    const int count = static_cast<int>(curves.size());
+    activeCurve = (index % count + count) % count;
+    selectedPoint = -1;
+}
+void addCurve() {
+    const float shift = 40.f * static_cast<float>(curves.size());
+    curves.push_back({
+        {180.f + shift, 700.f},
+        {260.f + shift, 260.f},
+        {500.f + shift, 260.f},
+        {580.f + shift, 700.f},
+    });
+    activeCurve = static_cast<int>(curves.size()) - 1;
+    selectedPoint = -1;
+}
+void removeActiveCurve() {
+    if (curves.size() <= 1) {
+        return;
+    }
+    curves.erase(curves.begin() + activeCurve);
+    if (activeCurve >= static_cast<int>(curves.size())) {
+        activeCurve = static_cast<int>(curves.size()) - 1;
+    }
+    selectedPoint = -1;
+}
+
+// Clicking picks the nearest control point on any curve and makes that curve active.
+void selectClosestPoint(Point2D mouse) {
+    int bestCurve = 0;
+    int bestPoint = 0;
+    float bestDistance = std::numeric_limits<float>::infinity();
+    for (int c = 0; c < static_cast<int>(curves.size()); ++c) {
+        const auto& curve = curves[static_cast<std::size_t>(c)];
+        const int point = closestControlPoint(curve, mouse);
+        const Point2D delta = curve[static_cast<std::size_t>(point)] - mouse;
+        const float distance = delta.x * delta.x + delta.y * delta.y;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestCurve = c;
+            bestPoint = point;
+        }
+    }
+    activeCurve = bestCurve;
+    selectedPoint = bestPoint;
+}
+
 void moveSelectedPoint(Point2D mouse) {
-    // handle edge cases
     if (selectedPoint < 0) {
         return;
     }
-    if (selectedPoint >= static_cast<int>(points.size())) {
+    auto& curve = currentCurve();
+    if (selectedPoint >= static_cast<int>(curve.size())) {
         selectedPoint = -1;
         return;
     }
-    points[static_cast<std::size_t>(selectedPoint)] = mouse;
-    keepHandleSmooth(points, static_cast<std::size_t>(selectedPoint));
+    curve[static_cast<std::size_t>(selectedPoint)] = mouse;
+    keepHandleSmooth(curve, static_cast<std::size_t>(selectedPoint));
 }
 
-void handleInput(sf::Window& window, bool& shouldQuit) {
+std::string curvesAsCode() {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2);
+    out << "// Galaga playfield is " << GALAGA_WIDTH << " x " << GALAGA_HEIGHT << ".\n";
+    out << "// Points outside 0.." << GALAGA_WIDTH << " or 0.." << GALAGA_HEIGHT
+        << " are off-screen.\n";
+    out << "std::vector<std::vector<sf::Vector2f>> curves = {\n";
+    for (const auto& curve : curves) {
+        out << "    {\n";
+        for (const Point2D& point : curve) {
+            out << "        {" << point.x << "f, " << point.y << "f},\n";
+        }
+        out << "    },\n";
+    }
+    out << "};\n";
+    return out.str();
+}
+
+void exportCurves() {
+    const std::string code = curvesAsCode();
+    std::cout << code << std::flush;
+    std::ofstream file("exported_curves.cpp");
+    if (file) {
+        file << code;
+        std::cout << "//exported_curves.cpp in the working directory.\n";
+    }
+}
+
+void handleInput(sf::RenderWindow& window, bool& shouldQuit) {
     while (const std::optional<sf::Event> event = window.pollEvent()) {
         if (event->is<sf::Event::Closed>()) {
             window.close();
@@ -226,8 +324,8 @@ void handleInput(sf::Window& window, bool& shouldQuit) {
             // TODO: (Part 3) On left-click, select the closest control point
             // using mouse->position and start dragging it.
             if (mouse->button == sf::Mouse::Button::Left) {
-                const Point2D mousePosition = mouseToPoint(mouse->position);
-                selectedPoint = closestControlPoint(points, mousePosition);
+                const Point2D mousePosition = mouseToPoint(window, mouse->position);
+                selectClosestPoint(mousePosition);
                 moveSelectedPoint(mousePosition);
             }
         } else if (const auto* mouse = event->getIf<sf::Event::MouseButtonReleased>()) {
@@ -240,25 +338,41 @@ void handleInput(sf::Window& window, bool& shouldQuit) {
             // TODO: (Part 4) Maintain matching slopes at shared endpoints.
             // When moving point 3, move point 5 without changing its distance
             // from point 4 (point numbers here start at 1).
-            moveSelectedPoint(mouseToPoint(mouse->position));
+            moveSelectedPoint(mouseToPoint(window, mouse->position));
         } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
             // TODO: (Part 4) '+' adds three control points; '-' removes three,
             // keeping at least four points.
             switch (key->code) {
                 case sf::Keyboard::Key::Add:
-                    addThreePoints(points);
+                    addThreePoints(currentCurve());
                     break;
                 case sf::Keyboard::Key::Equal:
                     if (key->shift) {
-                        addThreePoints(points);
+                        addThreePoints(currentCurve());
                     }
                     break;
                 case sf::Keyboard::Key::Hyphen:
                 case sf::Keyboard::Key::Subtract:
-                    removeThreePoints(points);
-                    if (selectedPoint >= static_cast<int>(points.size())) {
+                    removeThreePoints(currentCurve());
+                    if (selectedPoint >= static_cast<int>(currentCurve().size())) {
                         selectedPoint = -1;
                     }
+                    break;
+                case sf::Keyboard::Key::N:
+                    addCurve();
+                    break;
+                case sf::Keyboard::Key::LBracket:
+                    selectCurve(activeCurve - 1);
+                    break;
+                case sf::Keyboard::Key::RBracket:
+                    selectCurve(activeCurve + 1);
+                    break;
+                case sf::Keyboard::Key::Backspace:
+                case sf::Keyboard::Key::Delete:
+                    removeActiveCurve();
+                    break;
+                case sf::Keyboard::Key::E:
+                    exportCurves();
                     break;
                 default:
                     break;
@@ -276,28 +390,35 @@ void render(sf::RenderWindow& window) {
         static_cast<float>(elapsedFrames % TOTAL_FRAMES) / static_cast<float>(TOTAL_FRAMES);
 
     // ====== ====== ======
-    // TODO: (Part 1) Sample GetPoint over t in [0, 1] and connect samples using the line-drawing
-    // code from your project. Draw all four control points as circles after drawing the curve.
-    // ====== ====== ======
-    drawCurve(window, points, sf::Color::White);
-    drawControlPoints(window, points, selectedPoint);
-
-    // ====== ====== ======
-    // TODO: (Part 2) Draw a small square moving repeatedly along the curve.
-    // Use GetSlope to orient it to the curve at each time step.
-    // ====== ====== ======
-    drawOrientedSquare(window, points, animationTime);
-
-    // ====== ====== ======
-    // TODO: (Part 3) Draw control handles from point 1 to 2 and point 3 to 4.
-    // TODO: (Part 4) Draw all connected cubic Bezier segments and their handles.
-    // ====== ====== ======
-    drawHandles(window, points);
-
-    // ====== ====== ======
     // TODO: (Bonus) Support multiple curves, a Galaga screen overlay at a 1:2 ratio, and exporting
     // curve points as C++ code for Project 1b.
     // ====== ====== ======
+    drawGalagaOverlay(window);
+
+    for (int c = 0; c < static_cast<int>(curves.size()); ++c) {
+        const auto& curve = curves[static_cast<std::size_t>(c)];
+        const int selected = (c == activeCurve) ? selectedPoint : -1;
+
+        // ====== ====== ======
+        // TODO: (Part 1) Sample GetPoint over t in [0, 1] and connect samples using the
+        // line-drawing code from your project. Draw all four control points as circles after
+        // drawing the curve.
+        // ====== ====== ======
+        drawCurve(window, curve, sf::Color::White);
+        drawControlPoints(window, curve, selected);
+
+        // ====== ====== ======
+        // TODO: (Part 2) Draw a small square moving repeatedly along the curve.
+        // Use GetSlope to orient it to the curve at each time step.
+        // ====== ====== ======
+        drawOrientedSquare(window, curve, animationTime);
+
+        // ====== ====== ======
+        // TODO: (Part 3) Draw control handles from point 1 to 2 and point 3 to 4.
+        // TODO: (Part 4) Draw all connected cubic Bezier segments and their handles.
+        // ====== ====== ======
+        drawHandles(window, curve);
+    }
 
     window.display();
 }
@@ -311,6 +432,20 @@ int main() {
         window.setFramerateLimit(FPS_LIMIT);
         // Prevent key repeats.
         window.setKeyRepeatEnabled(false);
+
+        // View is twice the Galaga playfield (1:2), centered on it.
+        // Viewport fits that 3:4 world into the 800x800 window without stretching.
+        const float viewWidth = GALAGA_WIDTH * 2.f;
+        const float viewHeight = GALAGA_HEIGHT * 2.f;
+        sf::View view(sf::Vector2f(GALAGA_WIDTH * 0.5f, GALAGA_HEIGHT * 0.5f),
+                      sf::Vector2f(viewWidth, viewHeight));
+        const float windowRatio =
+            static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT);
+        const float viewRatio = viewWidth / viewHeight;
+        const float viewportWidth = viewRatio / windowRatio;
+        const float viewportLeft = (1.f - viewportWidth) * 0.5f;
+        view.setViewport(sf::FloatRect({viewportLeft, 0.f}, {viewportWidth, 1.f}));
+        window.setView(view);
 
         bool shouldQuit = false;
         // Main game loop
