@@ -290,7 +290,6 @@ void moveSelectedPoint(Point2D mouse) {
 std::string curvesAsCode() {
     std::ostringstream out;
     out << std::fixed << std::setprecision(2);
-    out << "// Galaga playfield is " << GALAGA_WIDTH << " x " << GALAGA_HEIGHT << ".\n";
     out << "// Points outside 0.." << GALAGA_WIDTH << " or 0.." << GALAGA_HEIGHT
         << " are off-screen.\n";
     out << "std::vector<std::vector<sf::Vector2f>> curves = {\n";
